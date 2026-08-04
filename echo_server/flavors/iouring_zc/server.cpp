@@ -70,15 +70,6 @@ IoUringZcEchoServer::IoUringZcEchoServer(uint16_t port, size_t /*unused*/)
         throw std::runtime_error("io_uring_queue_init: " + std::to_string(-ret));
     }
 
-    // -- Register buffers with the kernel --
-    // We register a single large buffer (the Request::buf array is 4096
-    // bytes per connection). For a real server you'd register a pool, but
-    // for our echo one connection at a time is fine.
-    // This eliminates the page-fault-and-pin overhead on every recv.
-    struct iovec iov;
-    // We'll register on-the-fly per-connection instead; skip for now
-    // since SEND_ZC is the main optimisation we want to measure.
-
     std::cout << "[io_uring_zc] Echo server on port " << port_ << "\n"
               << "[io_uring_zc] SEND_ZC enabled — zero-copy on send path\n";
 }

@@ -57,6 +57,7 @@ private:
     void handle_accept(int client_fd);
     void submit_recv(Request* req);
     void handle_recv(Request* req, int nread);
+    void submit_send(Request* req);
     void handle_send(Request* req);
 
     int       listen_fd_{-1};
