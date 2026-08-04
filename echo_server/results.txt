@@ -1,0 +1,52 @@
+# Echo Server Benchmark Results
+# Date: Wed Aug  5 03:12:22 IST 2026
+# Connections=10 Requests/conn=1000 Payload=2048B
+
+
+========================================
+  Echo Server Benchmark
+========================================
+  connections:  10
+  requests:     1000 per connection
+  total req:    10000
+  message size: 2048 bytes
+  client threads:2
+  target:       127.0.0.1:8080
+
+------------  Results  -------------
+  Requests/sec:         62529.9
+  p99 latency (ms):     0.109083
+  Avg latency (ms):     0.031651
+========================================
+
+========================================
+  Echo Server Benchmark
+========================================
+  connections:  10
+  requests:     1000 per connection
+  total req:    10000
+  message size: 2048 bytes
+  client threads:2
+  target:       127.0.0.1:8080
+
+------------  Results  -------------
+  Requests/sec:         59168.4
+  p99 latency (ms):     0.103042
+  Avg latency (ms):     0.0333662
+========================================
+
+========================================
+  Echo Server Benchmark
+========================================
+  connections:  10
+  requests:     1000 per connection
+  total req:    10000
+  message size: 2048 bytes
+  client threads:2
+  target:       127.0.0.1:8080
+
+------------  Results  -------------
+  Requests/sec:         59481.1
+  p99 latency (ms):     0.103917
+  Avg latency (ms):     0.0331406
+========================================
