@@ -89,7 +89,7 @@ static Stats run_benchmark(const std::string& host, uint16_t port,
                 std::string reply(message_size, '\0');
                 size_t recvd = 0;
                 while (recvd < message.size()) {
-                    ssize_t n = read(fd, (void *)reply.data() + recvd,
+                    ssize_t n = read(fd, reply.data() + recvd,
                                      message.size() - recvd);
                     if (n <= 0) break;
                     recvd += static_cast<size_t>(n);
