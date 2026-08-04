@@ -7,20 +7,32 @@
 // ==============================================================================
 // IoUringZcEchoServer — TCP echo server using Linux io_uring + SEND_ZC
 // ==============================================================================
-// Same architecture as the vanilla io_uring flavor, but:
 //
-//   1. Registers a pool of buffers with the kernel (IORING_REGISTER_BUFFERS)
-//      so recv buffers are pre-pinned — no page-fault overhead per recv.
+// Same single-threaded async architecture as the vanilla io_uring flavor,
+// but uses IORING_OP_SEND_ZC for the echo send path.
 //
-//   2. Uses IORING_OP_SEND_ZC for the echo — the NIC DMAs directly from
-//      the userspace buffer, eliminating the kernel-side copy on send.
-//      This means the buffer is pinned until SEND_ZC completes, so we
-//      cannot immediately submit the next recv — we wait for the SEND_ZC
-//      completion first.
+// How SEND_ZC differs from normal send:
 //
-// Flow per connection:
+//   Normal send (io_uring_prep_send):
+//     req->buf --memcpy--> kernel socket buffer --DMA--> NIC
+//     ^ free immediately        ^ kernel owns the copy
 //
-//   recv → buf  →  SEND_ZC(buf)  →  SEND_ZC done  →  recv → buf  → ...
+//   SEND_ZC (io_uring_prep_send_zc):
+//     req->buf --page pin--> [NIC DMAs directly from here]
+//     ^ LOCKED until CQE       ^ no kernel copy
+//
+// With normal send, the kernel copies data from req->buf into a kernel
+// buffer at submit time. req->buf is free immediately. With SEND_ZC, the
+// kernel pins the physical pages backing req->buf and the NIC reads from
+// them directly via DMA — zero copy. But req->buf is owned by the kernel
+// until the SEND_ZC completes, so we CANNOT submit the next recv until
+// handle_send_zc() runs.
+//
+// Trade-off:
+//   - Small payloads (64B): SEND_ZC is SLOWER because page pin/unpin
+//     overhead dwarfs the memcpy savings
+//   - Large payloads (1MB+): SEND_ZC is FASTER because the memcpy cost
+//     (~8us per MB) is eliminated
 //
 // No thread pool. No mutex. True zero-copy on the send path.
 // ==============================================================================
@@ -62,8 +74,6 @@ private:
     int         listen_fd_{-1};
     io_uring    ring_{};
     sockaddr_in addr_{};
-    // Pre-registered buffer index for IORING_REGISTER_BUFFERS
-    int         buf_group_{0};
 #endif
 
     uint16_t port_;

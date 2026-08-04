@@ -1,6 +1,29 @@
 // ==============================================================================
 // io_uring zero-copy echo server — Linux implementation + stub
 // ==============================================================================
+//
+// This is the SEND_ZC variant of the io_uring echo server. It demonstrates
+// true zero-copy on the send path: the NIC reads data directly from the
+// userspace buffer via DMA, bypassing the kernel socket buffer entirely.
+//
+// Key difference from vanilla io_uring:
+//
+//   Vanilla:  recv -> buf -> prep_send(buf) -> [kernel copies buf] -> submit
+//             ^ buf free immediately               ^ kernel owns copy
+//
+//   SEND_ZC:  recv -> buf -> prep_send_zc(buf) -> [kernel pins pages] -> submit
+//             ^ buf LOCKED until CQE               ^ NIC DMAs directly
+//
+// Because the buffer is pinned (locked in physical memory) until the NIC
+// finishes DMA, we CANNOT submit the next recv until the SEND_ZC completes.
+// This serializes recv and send for each connection — a trade-off that
+// favours large payloads where the copy savings outweigh the pipeline stall.
+//
+// For small payloads (64B), the page pin/unpin overhead (~1-2us) is larger
+// than the memcpy it saves (~50ns), so vanilla io_uring is faster.
+// For large payloads (1MB+), the memcpy cost (~8us) dominates, and SEND_ZC
+// wins decisively.
+// ==============================================================================
 
 #include "server.h"
 
@@ -35,8 +58,8 @@ void IoUringZcEchoServer::shutdown() { running_ = false; }
 // ==============================================================================
 // Constructor
 // ==============================================================================
-// Same as vanilla io_uring, plus registers the recv buffers with the kernel
-// so they are pre-pinned for DMA.
+// Same as vanilla io_uring: create a listen socket, bind, init the ring.
+// No special setup needed for SEND_ZC — it's just a different prep call.
 // ==============================================================================
 IoUringZcEchoServer::IoUringZcEchoServer(uint16_t port, size_t /*unused*/)
     : port_(port) {
@@ -90,12 +113,18 @@ void IoUringZcEchoServer::run() {
 // ==============================================================================
 // Event loop
 // ==============================================================================
+// IMPORTANT SUBMISSION RULE: never call io_uring_submit() from inside the
+// io_uring_for_each_cqe() loop. Submitting during CQ iteration can cause a
+// newly-completed CQE to be written while we iterate, corrupting the count
+// used by io_uring_cq_advance() → EBADF. We prepare SQEs in phase 1 and
+// submit everything once in phase 2.
+//
 // Flow per connection:
 //
 //   1. submit_accept()
-//   2. handle_accept() → submit_recv()
-//   3. handle_recv(data) → submit_send_zc() — sends from same buf, zero-copy
-//   4. handle_send_zc() → submit_recv() — buffer is free, start next read
+//   2. handle_accept() -> submit_recv()
+//   3. handle_recv(data) -> submit_send_zc() — sends from same buf, zero-copy
+//   4. handle_send_zc() -> submit_recv() — buffer is free, start next read
 //   ... repeat 3-4 until disconnect
 //
 // Key difference from vanilla: no memcpy to a send buffer. SEND_ZC uses the
@@ -116,6 +145,7 @@ void IoUringZcEchoServer::event_loop() {
             break;
         }
 
+        // -- PHASE 1: process completions, prepare new SQEs (no submit!) --
         unsigned head;
         unsigned count = 0;
         io_uring_for_each_cqe(&ring_, head, cqe) {
@@ -136,9 +166,11 @@ void IoUringZcEchoServer::event_loop() {
                 break;
             }
         }
-        io_uring_cq_advance(&ring_, count);
 
+        // -- PHASE 2: consume completions, THEN submit all new work at once --
+        io_uring_cq_advance(&ring_, count);
         submit_accept();
+        io_uring_submit(&ring_);
     }
 }
 
@@ -152,7 +184,7 @@ void IoUringZcEchoServer::submit_accept() {
 
     io_uring_prep_accept(sqe, listen_fd_, nullptr, nullptr, SOCK_NONBLOCK);
     io_uring_sqe_set_data(sqe, req);
-    io_uring_submit(&ring_);
+    // NOTE: no io_uring_submit() here — the event loop submits in phase 2
 }
 
 void IoUringZcEchoServer::handle_accept(int client_fd) {
@@ -173,7 +205,7 @@ void IoUringZcEchoServer::submit_recv(Request* req) {
 
     io_uring_prep_recv(sqe, req->client_fd, req->buf, sizeof(req->buf), 0);
     io_uring_sqe_set_data(sqe, req);
-    io_uring_submit(&ring_);
+    // NOTE: no io_uring_submit() here — the event loop submits in phase 2
 }
 
 void IoUringZcEchoServer::handle_recv(Request* req, int nread) {
@@ -191,8 +223,17 @@ void IoUringZcEchoServer::handle_recv(Request* req, int nread) {
     // -- Echo using ZERO-COPY send --
     // We use the same buffer that was filled by recv. The kernel will pin
     // these pages and the NIC will DMA directly from them — no kernel-side
-    // copy of the data. However, the buffer is now owned by the kernel
-    // until the SEND_ZC completes, so we CANNOT submit the next recv yet.
+    // copy of the data.
+    //
+    // HOWEVER: the buffer is now owned by the kernel until the SEND_ZC
+    // completes. We CANNOT submit the next recv yet because the kernel
+    // might still be DMA-reading from req->buf. We must wait for
+    // handle_send_zc() first.
+    //
+    // This is the key trade-off: zero copy costs concurrency.
+    // Vanilla io_uring can pipeline recv+send because the kernel copies
+    // the data immediately. SEND_ZC cannot pipeline because the buffer
+    // is pinned in place.
     req->op  = Request::SEND_ZC;
     req->len = static_cast<size_t>(nread);
     submit_send_zc(req);
@@ -200,6 +241,20 @@ void IoUringZcEchoServer::handle_recv(Request* req, int nread) {
 
 // ==============================================================================
 // SEND_ZC  — zero-copy send, NIC DMAs directly from req->buf
+// ==============================================================================
+// io_uring_prep_send_zc() vs io_uring_prep_send():
+//
+//   prep_send():   kernel copies req->buf into a kernel buffer at submit
+//                  time. req->buf is free immediately. The kernel sends
+//                  from its own buffer. One extra copy on the send path.
+//
+//   prep_send_zc(): kernel pins the physical pages of req->buf and sets
+//                   up a DMA descriptor pointing directly at them. The NIC
+//                   reads from req->buf directly — zero copy. But req->buf
+//                   is pinned (locked in RAM, can't be touched) until the
+//                   CQE arrives confirming DMA is done.
+//
+// The extra '0' flags parameter is for future use (must be 0 for now).
 // ==============================================================================
 void IoUringZcEchoServer::submit_send_zc(Request* req) {
     auto* sqe = io_uring_get_sqe(&ring_);
@@ -210,7 +265,7 @@ void IoUringZcEchoServer::submit_send_zc(Request* req) {
     // kernel-buffer copy that a regular send requires.
     io_uring_prep_send_zc(sqe, req->client_fd, req->buf, req->len, 0, 0);
     io_uring_sqe_set_data(sqe, req);
-    io_uring_submit(&ring_);
+    // NOTE: no io_uring_submit() here — the event loop submits in phase 2
 }
 
 void IoUringZcEchoServer::handle_send_zc(Request* req) {
