@@ -5,6 +5,14 @@
 #include <memory>
 #include <cstring>
 
+#ifndef __APPLE__
+// Stub for non-macOS platforms
+int main(int, char*[]) {
+    std::cerr << "[kqueue] This server requires macOS/BSD\n";
+    return 1;
+}
+#else
+
 static std::unique_ptr<EchoServer> g_server;
 
 // -----------------------------------------------------------------------
@@ -50,3 +58,4 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
+#endif

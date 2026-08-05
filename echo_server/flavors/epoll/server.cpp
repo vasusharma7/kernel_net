@@ -198,14 +198,18 @@ void EchoServer::handle_read(int client_fd) {
 
     if (n <= 0) {
         if (n == 0) {
-            // n == 0 means the client closed the connection cleanly
+            // n == 0 means the client closed the connection cleanly.
+            // IMPORTANT: the network thread must NOT close the fd here.
+            // A worker may still be writing an echo to this fd. Instead we
+            // remove it from epoll and enqueue a close task — the worker
+            // owns the fd lifecycle.
             epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
-            close(client_fd);
+            pool_.enqueue([client_fd]() { close(client_fd); });
         } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
             // A real error — not just "no data right now"
             std::cerr << "read: " << strerror(errno) << "\n";
             epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
-            close(client_fd);
+            pool_.enqueue([client_fd]() { close(client_fd); });
         }
         // Note: if errno == EAGAIN, it means we read all available data.
         // This can happen with edge-triggered mode. We just return; epoll

@@ -1,9 +1,27 @@
 #include "server.h"
 
-#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <unistd.h>
+
+#ifndef __APPLE__
+// ==============================================================================
+// Stub for non-macOS platforms
+// ==============================================================================
+EchoServer::EchoServer(uint16_t, size_t) : port_(0), pool_(1) {
+    std::cerr << "[kqueue] Fatal: kqueue is macOS/BSD only\n";
+    throw std::runtime_error("kqueue unsupported on this platform");
+}
+EchoServer::~EchoServer() = default;
+void EchoServer::run() {}
+void EchoServer::shutdown() {}
+
+#else
+// ==============================================================================
+// macOS implementation using kqueue
+// ==============================================================================
+
+#include <cstring>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -220,12 +238,22 @@ void EchoServer::handle_read(int client_fd) {
 
     if (n <= 0) {
         if (n == 0) {
-            // n == 0 means the client closed the connection cleanly
-            close(client_fd);
+            // n == 0 means the client closed the connection cleanly.
+            // IMPORTANT: the network thread must NOT close the fd here.
+            // A worker may still be writing an echo to this fd. Instead we
+            // deregister from kqueue (so kevent won't fire again for this
+            // fd) and enqueue a close task — the worker owns the fd lifecycle.
+            struct kevent ev;
+            EV_SET(&ev, client_fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
+            kevent(kq_, &ev, 1, nullptr, 0, nullptr);
+            pool_.enqueue([client_fd]() { close(client_fd); });
         } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
             // A real error — not just "no data right now"
             std::cerr << "read: " << strerror(errno) << "\n";
-            close(client_fd);
+            struct kevent ev;
+            EV_SET(&ev, client_fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
+            kevent(kq_, &ev, 1, nullptr, 0, nullptr);
+            pool_.enqueue([client_fd]() { close(client_fd); });
         }
         // Note: if errno == EAGAIN, it means we read all available data.
         // This can happen with edge-triggered mode. We just return; kqueue
@@ -261,3 +289,5 @@ void EchoServer::handle_read(int client_fd) {
         }
     });
 }
+
+#endif  // __APPLE__
