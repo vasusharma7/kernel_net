@@ -81,16 +81,14 @@ for SERVER in "${SERVERS[@]}"; do
         SERVER_PID=$!
         sleep 1
 
-        # Capture syscall counts via perf stat (Linux only)
-        PERF_PID=""
-        PERF_FILE=""
-        if $PERF && command -v perf &>/dev/null; then
-            PERF_FILE="/tmp/perf_${BINNAME}_w${WORKERS}.txt"
-            # perf stat -p runs until killed; prints summary on SIGINT
-            # Note: may need sudo or perf_event_paranoid= -1 for syscall events
-            perf stat -e syscalls:sys_enter_read,syscalls:sys_enter_write,syscalls:sys_enter_epoll_wait,syscalls:sys_enter_io_uring_enter,context-switches \
-                -p "$SERVER_PID" -o "$PERF_FILE" 2>/dev/null &
-            PERF_PID=$!
+        # Capture syscall counts via strace -c (Linux only)
+        STRACE_PID=""
+        STRACE_FILE=""
+        if $PERF && command -v strace &>/dev/null; then
+            STRACE_FILE="/tmp/strace_${BINNAME}_w${WORKERS}.txt"
+            # strace -c counts syscalls until killed, prints summary on exit
+            strace -c -p "$SERVER_PID" -o "$STRACE_FILE" 2>/dev/null &
+            STRACE_PID=$!
         fi
 
         # Run benchmark
@@ -98,17 +96,17 @@ for SERVER in "${SERVERS[@]}"; do
                   --requests "$REQUESTS" --size "$SIZE" --threads 2 \
             | tee -a "$RESULTS"
 
-        # Stop perf and print syscall counts
-        if [[ -n "$PERF_PID" ]]; then
-            kill -INT "$PERF_PID" 2>/dev/null || true
-            wait "$PERF_PID" 2>/dev/null || true
+        # Stop strace and print syscall counts
+        if [[ -n "$STRACE_PID" ]]; then
+            kill -INT "$STRACE_PID" 2>/dev/null || true
+            wait "$STRACE_PID" 2>/dev/null || true
             echo "" | tee -a "$RESULTS"
             echo "  --- Server syscall counts ---" | tee -a "$RESULTS"
-            if [[ -f "$PERF_FILE" ]]; then
-                head -20 "$PERF_FILE" | grep -v "^$" | tee -a "$RESULTS"
-                rm -f "$PERF_FILE"
+            if [[ -f "$STRACE_FILE" ]]; then
+                grep -E "read|write|epoll|io_uring|futex|wait|total|%" "$STRACE_FILE" | head -15 | tee -a "$RESULTS"
+                rm -f "$STRACE_FILE"
             else
-                echo "  (perf output not captured — try: sudo sysctl kernel.perf_event_paranoid=-1)" | tee -a "$RESULTS"
+                echo "  (strace output not captured)" | tee -a "$RESULTS"
             fi
             echo "" | tee -a "$RESULTS"
         fi
