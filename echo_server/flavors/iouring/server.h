@@ -93,6 +93,7 @@ private:
     int       listen_fd_{-1};
     io_uring  ring_{};       // the io_uring instance (SQ + CQ)
     sockaddr_in addr_{};
+    bool      accept_pending_{false};  // only one ACCEPT in flight at a time
 #endif
 
     uint16_t port_;

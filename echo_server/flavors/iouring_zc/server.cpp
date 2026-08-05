@@ -169,7 +169,7 @@ void IoUringZcEchoServer::event_loop() {
 
         // -- PHASE 2: consume completions, THEN submit all new work at once --
         io_uring_cq_advance(&ring_, count);
-        submit_accept();
+        if (!accept_pending_) submit_accept();
         io_uring_submit(&ring_);
     }
 }
@@ -184,13 +184,14 @@ void IoUringZcEchoServer::submit_accept() {
 
     io_uring_prep_accept(sqe, listen_fd_, nullptr, nullptr, SOCK_NONBLOCK);
     io_uring_sqe_set_data(sqe, req);
-    // NOTE: no io_uring_submit() here — the event loop submits in phase 2
+    accept_pending_ = true;
 }
 
 void IoUringZcEchoServer::handle_accept(int client_fd) {
+    accept_pending_ = false;
     if (client_fd < 0) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK)
-            std::cerr << "accept error: " << strerror(errno) << "\n";
+        if (client_fd != -EAGAIN && client_fd != -EWOULDBLOCK)
+            std::cerr << "accept error: " << -client_fd << "\n";
         return;
     }
     submit_recv(new Request{Request::RECV, client_fd, {}, 0});

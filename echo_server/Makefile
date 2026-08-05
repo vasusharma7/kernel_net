@@ -6,7 +6,7 @@ UNAME_S  := $(shell uname -s)
 # Default target — auto-selects server based on platform
 # ------------------------------------------------------------------
 ifeq ($(UNAME_S),Linux)
-all: echo_server_iouring echo_server_iouring_zc bench_client
+all: echo_server_epoll echo_server_iouring echo_server_iouring_zc bench_client
 else
 all: echo_server bench_client
 endif
@@ -16,6 +16,12 @@ endif
 # ------------------------------------------------------------------
 echo_server: common/thread_pool.cpp flavors/kqueue/main.cpp flavors/kqueue/server.cpp
 	$(CXX) $(CXXFLAGS) -Icommon -Iflavors/kqueue $^ -lpthread -o $@
+
+# ------------------------------------------------------------------
+# epoll server — builds on Linux (identical architecture to kqueue)
+# ------------------------------------------------------------------
+echo_server_epoll: common/thread_pool.cpp flavors/epoll/main.cpp flavors/epoll/server.cpp
+	$(CXX) $(CXXFLAGS) -Icommon -Iflavors/epoll $^ -lpthread -o $@
 
 # ------------------------------------------------------------------
 # io_uring server — vanilla (baseline async)
@@ -36,4 +42,4 @@ bench_client: bench/bench_client.cpp
 	$(CXX) $(CXXFLAGS) bench/bench_client.cpp -lpthread -o $@
 
 clean:
-	rm -f echo_server echo_server_iouring echo_server_iouring_zc bench_client
+	rm -f echo_server echo_server_epoll echo_server_iouring echo_server_iouring_zc bench_client

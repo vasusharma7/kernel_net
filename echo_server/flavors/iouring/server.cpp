@@ -148,8 +148,6 @@ void IoUringEchoServer::run() {
 // running_ flag regularly for clean shutdown.
 // ==============================================================================
 void IoUringEchoServer::event_loop() {
-    constexpr int QUEUE_DEPTH = 256;
-
     // Prime the first accept — without this, no clients can connect
     submit_accept();
 
@@ -197,7 +195,7 @@ void IoUringEchoServer::event_loop() {
 
         // -- PHASE 2: consume completions, THEN submit all new work at once --
         io_uring_cq_advance(&ring_, count);  // free the consumed CQEs
-        submit_accept();                     // keep accept primed
+        if (!accept_pending_) submit_accept();  // keep accept primed
         io_uring_submit(&ring_);             // ONE syscall for all new SQEs
     }
 }
@@ -218,13 +216,17 @@ void IoUringEchoServer::submit_accept() {
     // This is NOT a syscall — it's writing to a memory-mapped buffer.
     io_uring_prep_accept(sqe, listen_fd_, nullptr, nullptr, SOCK_NONBLOCK);
     io_uring_sqe_set_data(sqe, req);  // attach our tracking struct
+    accept_pending_ = true;            // mark one ACCEPT in flight
     // NOTE: no io_uring_submit() here — the event loop submits in phase 2
 }
 
 void IoUringEchoServer::handle_accept(int client_fd) {
+    accept_pending_ = false;  // accept completed (or errored), can submit another
     if (client_fd < 0) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK)
-            std::cerr << "accept error: " << strerror(errno) << "\n";
+        // cqe->res contains the negative error code directly (e.g. -EAGAIN).
+        // Do NOT check errno — it's stale from a previous syscall.
+        if (client_fd != -EAGAIN && client_fd != -EWOULDBLOCK)
+            std::cerr << "accept error: " << -client_fd << "\n";
         return;
     }
     // Start reading from this client (prepares the recv SQE, no submit)

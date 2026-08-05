@@ -44,7 +44,7 @@ IFS=',' read -ra WORKER_LIST <<< "$SERVER_WORKERS"
 
 # Auto-detect available server binaries
 SERVERS=()
-for bin in echo_server echo_server_iouring echo_server_iouring_zc; do
+for bin in echo_server echo_server_epoll echo_server_iouring echo_server_iouring_zc; do
     if [[ -x "$PROJECT_DIR/$bin" ]]; then
         SERVERS+=("$PROJECT_DIR/$bin")
     fi
