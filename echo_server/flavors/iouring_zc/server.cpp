@@ -139,36 +139,41 @@ void IoUringZcEchoServer::event_loop() {
         io_uring_cqe* cqe    = nullptr;
 
         int ret = io_uring_wait_cqe_timeout(&ring_, &cqe, &ts);
-        if (ret == -ETIME || ret == -EINTR) continue;
         if (ret < 0) {
-            std::cerr << "io_uring_wait_cqe: " << -ret << "\n";
-            break;
-        }
-
-        // -- PHASE 1: process completions, prepare new SQEs (no submit!) --
-        unsigned head;
-        unsigned count = 0;
-        io_uring_for_each_cqe(&ring_, head, cqe) {
-            auto* req = reinterpret_cast<Request*>(io_uring_cqe_get_data(cqe));
-            int   res = cqe->res;
-            ++count;
-
-            switch (req->op) {
-            case Request::ACCEPT:
-                handle_accept(res);
-                delete req;
-                break;
-            case Request::RECV:
-                handle_recv(req, res);
-                break;
-            case Request::SEND_ZC:
-                handle_send_zc(req);
+            if (ret == -ETIME || ret == -EINTR) {
+                // Timeout — no completions. Still fall through to flush SQEs.
+            } else {
+                std::cerr << "io_uring_wait_cqe: " << -ret << "\n";
                 break;
             }
         }
 
-        // -- PHASE 2: consume completions, THEN submit all new work at once --
-        io_uring_cq_advance(&ring_, count);
+        // -- PHASE 1: process completions (if any) --
+        if (ret == 0) {
+            unsigned head;
+            unsigned count = 0;
+            io_uring_for_each_cqe(&ring_, head, cqe) {
+                auto* req = reinterpret_cast<Request*>(io_uring_cqe_get_data(cqe));
+                int   res = cqe->res;
+                ++count;
+
+                switch (req->op) {
+                case Request::ACCEPT:
+                    handle_accept(res);
+                    delete req;
+                    break;
+                case Request::RECV:
+                    handle_recv(req, res);
+                    break;
+                case Request::SEND_ZC:
+                    handle_send_zc(req);
+                    break;
+                }
+            }
+            io_uring_cq_advance(&ring_, count);
+        }
+
+        // -- PHASE 2: ALWAYS submit —
         if (!accept_pending_) submit_accept();
         io_uring_submit(&ring_);
     }

@@ -156,47 +156,45 @@ void IoUringEchoServer::event_loop() {
         __kernel_timespec ts = {1, 0};
         io_uring_cqe* cqe    = nullptr;
 
-        // io_uring_wait_cqe_timeout() sleeps until either:
-        //   a) a completion arrives in the CQ, or
-        //   b) the 1-second timeout expires
-        // This is the ONLY blocking syscall in the entire event loop.
         int ret = io_uring_wait_cqe_timeout(&ring_, &cqe, &ts);
-        if (ret == -ETIME || ret == -EINTR) continue;
         if (ret < 0) {
-            std::cerr << "io_uring_wait_cqe: " << -ret << "\n";
-            break;
-        }
-
-        // -- PHASE 1: process completions, prepare new SQEs (no submit!) --
-        unsigned head;
-        unsigned count = 0;
-        io_uring_for_each_cqe(&ring_, head, cqe) {
-            // io_uring_cqe_get_data() returns the Request* we attached
-            // via io_uring_sqe_set_data() when we submitted the SQE.
-            auto* req = reinterpret_cast<Request*>(io_uring_cqe_get_data(cqe));
-            int   res = cqe->res;  // result: new fd, bytes read, bytes sent
-            ++count;
-
-            switch (req->op) {
-            case Request::ACCEPT:
-                handle_accept(res);  // prepares recv SQE (no submit)
-                delete req;          // accept is one-shot — clean up
-                break;
-            case Request::RECV:
-                handle_recv(req, res);  // prepares send SQE (no submit)
-                // req is NOT deleted here — it's reused for the send
-                break;
-            case Request::SEND:
-                handle_send(req);  // prepares recv SQE (no submit)
-                // req is NOT deleted here — it's reused for the next recv
+            if (ret == -ETIME || ret == -EINTR) {
+                // Timeout or signal — no completions this iteration.
+                // Still fall through to phase 2 to flush any pending SQEs.
+            } else {
+                std::cerr << "io_uring_wait_cqe: " << -ret << "\n";
                 break;
             }
         }
 
-        // -- PHASE 2: consume completions, THEN submit all new work at once --
-        io_uring_cq_advance(&ring_, count);  // free the consumed CQEs
-        if (!accept_pending_) submit_accept();  // keep accept primed
-        io_uring_submit(&ring_);             // ONE syscall for all new SQEs
+        // -- PHASE 1: process completions (if any), prepare new SQEs --
+        if (ret == 0) {
+            unsigned head;
+            unsigned count = 0;
+            io_uring_for_each_cqe(&ring_, head, cqe) {
+                auto* req = reinterpret_cast<Request*>(io_uring_cqe_get_data(cqe));
+                int   res = cqe->res;
+                ++count;
+
+                switch (req->op) {
+                case Request::ACCEPT:
+                    handle_accept(res);
+                    delete req;
+                    break;
+                case Request::RECV:
+                    handle_recv(req, res);
+                    break;
+                case Request::SEND:
+                    handle_send(req);
+                    break;
+                }
+            }
+            io_uring_cq_advance(&ring_, count);
+        }
+
+        // -- PHASE 2: ALWAYS submit — flushes accept, recv, and send SQEs --
+        if (!accept_pending_) submit_accept();
+        io_uring_submit(&ring_);
     }
 }
 
