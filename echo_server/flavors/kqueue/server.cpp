@@ -207,11 +207,13 @@ void EchoServer::accept_connection(int listen_fd) {
 
         // -- Register the client fd with kqueue --
         // We want to be woken up when this client sends data.
-        // EV_CLEAR = edge-triggered: we MUST read all available data in a
-        // loop until EAGAIN, because we won't get another notification
-        // until more data arrives.
+        // NOTE: we use LEVEL-triggered (no EV_CLEAR) deliberately. With
+        // edge-triggered (EV_CLEAR), if read() returns fewer bytes than the
+        // socket holds, the remaining data won't trigger a new event until
+        // MORE data arrives — so the client blocks forever waiting for its
+        // echo. Level-triggered keeps firing until the socket is drained.
         struct kevent ev;
-        EV_SET(&ev, client_fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, nullptr);
+        EV_SET(&ev, client_fd, EVFILT_READ, EV_ADD, 0, 0, nullptr);
         if (kevent(kq_, &ev, 1, nullptr, 0, nullptr) < 0) {
             std::cerr << "kevent add client: " << strerror(errno) << "\n";
             close(client_fd);

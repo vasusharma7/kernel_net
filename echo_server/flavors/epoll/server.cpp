@@ -165,12 +165,14 @@ void EchoServer::accept_connection(int listen_fd) {
             break;
         }
 
-        // Register with epoll — edge-triggered
-        // EPOLLET = edge-triggered: we MUST read all available data in a
-        // loop until EAGAIN, because we won't get another notification
-        // until more data arrives.
+        // Register with epoll — LEVEL-triggered
+        // We use LEVEL-triggered (no EPOLLET) deliberately. With edge-triggered
+        // (EPOLLET), if read() returns fewer bytes than the socket holds, the
+        // remaining data won't trigger a new event until MORE data arrives —
+        // so the client blocks forever waiting for its echo.
+        // Level-triggered keeps firing until the socket is fully drained.
         epoll_event ev{};
-        ev.events   = EPOLLIN | EPOLLET;
+        ev.events   = EPOLLIN;
         ev.data.fd  = client_fd;
         if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_fd, &ev) < 0) {
             std::cerr << "epoll_ctl add client: " << strerror(errno) << "\n";
