@@ -82,6 +82,7 @@ for SERVER in "${SERVERS[@]}"; do
         sleep 1
 
         # Capture syscall counts via perf stat (Linux only)
+        PERF_PID=""
         PERF_FILE=""
         if $PERF && command -v perf &>/dev/null; then
             PERF_FILE="/tmp/perf_${BINNAME}_w${WORKERS}.txt"
